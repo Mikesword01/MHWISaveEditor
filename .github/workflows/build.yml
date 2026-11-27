@@ -135,17 +135,7 @@ jobs:
       # 8. Compile the application
       - name: Build Release
         shell: pwsh
-        env:
-          STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
         run: |
-          $steamKey = $env:STEAM_API_KEY
-
-          if ([string]::IsNullOrWhiteSpace($steamKey)) {
-            $steamKey = "NO_API_KEY"
-          }
-
-          $steamMacro = '"' + $steamKey + '"'
-
           $solution = Join-Path $env:GITHUB_WORKSPACE "MHWISaveEditor.sln"
 
           if (!(Test-Path $solution)) {
@@ -160,7 +150,6 @@ jobs:
             "/p:QtMsBuild=$env:QTMSBUILD_PATH"
             "/p:QtInstall=$env:QT_INSTALL_DIR"
             "/p:VcpkgRoot=$env:VCPKG_ROOT"
-            "/p:STEAM_API_KEY=$steamMacro"
             "/verbosity:minimal"
           )
 
