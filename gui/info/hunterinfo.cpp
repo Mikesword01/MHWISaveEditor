@@ -193,8 +193,7 @@ void HunterInfo::Load(mhw_ib_save* mhwSave, mhw_ps4_save* ps4, int slotIndex)
   SaveLoader::Load(mhwSave, ps4, slotIndex);
   mhw_save_slot* mhwSaveSlot = MHW_SaveSlot();
 
-  str64 hunterName = {};
-  str64 palicoName = {};
+  str64 hunterName = {}, palicoName = {};
   u32 zeni = mhwSaveSlot->hunter.zeni;
   u32 researchPoints = mhwSaveSlot->hunter.research_points;
   u32 steamworksFuel = mhwSaveSlot->steamworks_stored_fuel;
@@ -204,8 +203,7 @@ void HunterInfo::Load(mhw_ib_save* mhwSave, mhw_ps4_save* ps4, int slotIndex)
 
   strncpy_s(hunterName, sizeof(hunterName), (char*)mhwSaveSlot->hunter.name, COUNTOF(hunterName));
   strncpy_s(palicoName, sizeof(palicoName), (char*)mhwSaveSlot->palico_name, COUNTOF(palicoName));
-  hunterName[COUNTOF(hunterName) - 1] = '\0';
-  palicoName[COUNTOF(palicoName) - 1] = '\0';
+  hunterName[COUNTOF(hunterName) - 1] = palicoName[COUNTOF(palicoName) - 1] = '\0';
 
   ui->edtHunterName->setText(hunterName);
   ui->edtPalicoName->setText(palicoName);
@@ -214,47 +212,48 @@ void HunterInfo::Load(mhw_ib_save* mhwSave, mhw_ps4_save* ps4, int slotIndex)
   ui->spnSteamworksFuel->setValue(steamworksFuel);
   ui->spnPlaytime->setValue(playtime);
 
-  {
-    hr_original = mhwSaveSlot->hunter.hunter_rank;
+  // Load HR and MR milestones
+  hr_original = mhwSaveSlot->hunter.hunter_rank;
+  u32 hr = mhwSaveSlot->hunter.hunter_rank, hr_xp = mhwSaveSlot->hunter.hunter_rank_xp;
+  u32 hr_min = MHWSaveUtils::HRPreviousMilestone(hr);
+  u32 hr_min_xp = (hr_min == hr) ? hr_xp : MHWSaveUtils::HRRankToEXP(hr_min);
+  ui->spnHunterHR->setRange(0, HR_MAX_XP);
+  ui->spnHunterHR->setValue(hr_xp);
+  ui->spnHunterHR->setRange(hr_min_xp, HR_MAX_XP);
 
-    u32 hr = mhwSaveSlot->hunter.hunter_rank;
-    u32 hr_xp = mhwSaveSlot->hunter.hunter_rank_xp;
-    u32 hr_min = MHWSaveUtils::HRPreviousMilestone(hr);
-    u32 hr_min_xp = MHWSaveUtils::HRRankToEXP(hr_min);
-    if (hr_min == hr) hr_min_xp = hr_xp;
-    ui->spnHunterHR->setRange(0, HR_MAX_XP);
-    ui->spnHunterHR->setValue(hr_xp);
-    ui->spnHunterHR->setRange(hr_min_xp, HR_MAX_XP);
-  }
+  mr_original = mhwSaveSlot->hunter.master_rank;
+  u32 mr = mhwSaveSlot->hunter.master_rank, mr_xp = mhwSaveSlot->hunter.master_rank_xp;
+  u32 mr_min = MHWSaveUtils::MRPreviousMilestone(mr);
+  u32 mr_min_xp = (mr_min == mr) ? mr_xp : MHWSaveUtils::MRRankToEXP(mr_min);
+  ui->spnHunterMR->setRange(0, MR_MAX_XP);
+  ui->spnHunterMR->setValue(mr_xp);
+  ui->spnHunterMR->setRange(mr_min_xp, MR_MAX_XP);
 
-  {
-    mr_original = mhwSaveSlot->hunter.master_rank;
-
-    u32 mr = mhwSaveSlot->hunter.master_rank;
-    u32 mr_xp = mhwSaveSlot->hunter.master_rank_xp;
-    u32 mr_min = MHWSaveUtils::MRPreviousMilestone(mr);
-    u32 mr_min_xp = MHWSaveUtils::MRRankToEXP(mr_min);
-    if (mr_min == mr) mr_min_xp = mr_xp;
-    ui->spnHunterMR->setRange(0, MR_MAX_XP);
-    ui->spnHunterMR->setValue(mr_xp);
-    ui->spnHunterMR->setRange(mr_min_xp, MR_MAX_XP);
-  }
-
+  // Load Guiding Lands region levels
   QMapIterator<QSpinBox*, u8> i(regionIndexMapping);
   while (i.hasNext()) {
     i.next();
-
     QSpinBox* spnLevelGL = i.key();
     u8 index = i.value();
-
     u32 level = (guidingLandsLevels[index] / GUIDING_LANDS_XP_PER_LEVEL) + 1;
     u32 maxLevel = guidingLandsLevelsUnlocked[index];
-    u32 minLevel = maxLevel > 0;
-
-    spnLevelGL->setMinimum(minLevel);
+    spnLevelGL->setMinimum(maxLevel > 0);
     spnLevelGL->setMaximum(maxLevel);
     spnLevelGL->setValue(level);
   }
 
+  // Guiding Lands level cap calculation and UI update
+  u32 raw_cap = mhwSaveSlot->guiding_lands.level_total;
+  u32 clamped_cap = std::min(raw_cap, 300000u);
+  u32 earned_xp = clamped_cap >= 150000 ? (clamped_cap - 150000) : 0;
+  double total_levels = 27.0 + (earned_xp / (double)GUIDING_LANDS_XP_PER_LEVEL);
+
+  ui->lblLevelCapGL->setText(
+    tr("Level Cap (%1 / 42 | %2 / 150k):")
+      .arg(total_levels, 0, 'f', 2)
+      .arg(earned_xp)
+  );
+
   SaveLoader::FinishLoad();
 }
+
