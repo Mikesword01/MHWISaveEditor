@@ -1,0 +1,127 @@
+
+name: Build MHWISaveEditor
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows Release
+    runs-on: windows-2022
+
+    steps:
+      # 1. Download the repository
+      - name: Checkout source
+        uses: actions/checkout@v5
+
+      # 2. Configure MSBuild
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v3
+
+      # 3. Install Qt 6.7.3
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+
+      # 4. Configure Qt paths
+      - name: Configure Qt
+        shell: pwsh
+        run: |
+          $qtDir = "C:\Qt\6.7.3\msvc2019_64"
+
+          if (!(Test-Path "$qtDir\bin\qmake.exe")) {
+            throw "Qt installation was not found at $qtDir"
+          }
+
+          "QT_INSTALL_DIR=$qtDir" >> $env:GITHUB_ENV
+          "$qtDir\bin" >> $env:GITHUB_PATH
+
+      # 5. Download Qt MSBuild integration
+      - name: Install Qt MSBuild
+        shell: pwsh
+        run: |
+          $url = "https://download.qt.io/official_releases/vsaddin/3.3.1/qt-vsaddin-msbuild-3.3.1.zip"
+          $zip = "$env:RUNNER_TEMP\qt-msbuild.zip"
+          $destination = "$env:GITHUB_WORKSPACE\QtMsBuild"
+
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          Expand-Archive -Path $zip -DestinationPath $destination -Force
+
+          $targets = Get-ChildItem -Path $destination -Filter "qt.targets" -Recurse |
+            Select-Object -First 1
+
+          if ($null -eq $targets) {
+            throw "Could not find qt.targets in Qt MSBuild archive"
+          }
+
+          $qtMsBuildPath = $targets.DirectoryName
+          "QTMSBUILD_PATH=$qtMsBuildPath" >> $env:GITHUB_ENV
+
+      # 6. Install vcpkg dependencies
+      - name: Install vcpkg dependencies
+        shell: pwsh
+        run: |
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+
+          if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) {
+            $vcpkgRoot = "C:\vcpkg"
+          }
+
+          $vcpkg = "$vcpkgRoot\vcpkg.exe"
+
+          if (!(Test-Path $vcpkg)) {
+            throw "vcpkg was not found at $vcpkg"
+          }
+
+          "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
+
+          & $vcpkg integrate install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & $vcpkg install cryptopp:x64-windows curl:x64-windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # 7. Compile the application
+      - name: Build Release
+        shell: pwsh
+        env:
+          STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
+        run: |
+          $steamKey = $env:STEAM_API_KEY
+
+          if ([string]::IsNullOrWhiteSpace($steamKey)) {
+            $steamKey = '"NO_API_KEY"'
+          } else {
+            $steamKey = '"' + $steamKey + '"'
+          }
+
+          & msbuild .\MHWISaveEditor.sln `
+            /m `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            "/p:QtMsBuild=$env:QTMSBUILD_PATH" `
+            "/p:QtInstallDir=$env:QT_INSTALL_DIR" `
+            "/p:VcpkgRoot=$env:VCPKG_ROOT" `
+            "/p:STEAM_API_KEY=$steamKey" `
+            /verbosity:minimal
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      # 8. Upload the finished application
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: MHWISaveEditor-Windows-x64
+          path: x64/Deploy/
+          if-no-files-found: error
+          retention-days: 14
