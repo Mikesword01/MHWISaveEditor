@@ -11,17 +11,18 @@ jobs:
   build:
     name: Build Windows Release
     runs-on: windows-2022
+    timeout-minutes: 90
 
     steps:
-      # 1. Download the repository
+      # 1. Checkout the application
       - name: Checkout source
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
-      # 2. Configure MSBuild
+      # 2. Configure Visual Studio MSBuild
       - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v3
+        uses: microsoft/setup-msbuild@v2
 
-      # 3. Install Qt 6.7.3
+      # 3. Install the exact Qt version used by the project
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -30,73 +31,108 @@ jobs:
           target: desktop
           arch: win64_msvc2019_64
 
-      # 4. Configure Qt paths
-      
+      # 4. Validate and register the actual Qt installation
       - name: Configure Qt
         shell: pwsh
         run: |
           $qtDir = $env:QT_ROOT_DIR
 
           if ([string]::IsNullOrWhiteSpace($qtDir)) {
-            throw "QT_ROOT_DIR was not provided by install-qt-action"
+            throw "Qt installer did not provide QT_ROOT_DIR."
           }
 
           if (!(Test-Path "$qtDir\bin\qmake.exe")) {
-            throw "Qt installation is incomplete: $qtDir"
+            throw "qmake.exe not found in Qt installation: $qtDir"
           }
 
-          Write-Host "Qt installation found at: $qtDir"
+          Write-Host "Qt installation: $qtDir"
 
           "QT_INSTALL_DIR=$qtDir" >> $env:GITHUB_ENV
 
-
-      # 5. Download Qt MSBuild integration
+      # 5. Download the official standalone Qt MSBuild files
       - name: Install Qt MSBuild
         shell: pwsh
         run: |
+          $archive = Join-Path $env:RUNNER_TEMP "qt-msbuild.zip"
+          $extractDir = Join-Path $env:RUNNER_TEMP "qt-msbuild"
+
           $url = "https://download.qt.io/official_releases/vsaddin/3.3.1/qt-vsaddin-msbuild-3.3.1.zip"
-          $zip = "$env:RUNNER_TEMP\qt-msbuild.zip"
-          $destination = "$env:GITHUB_WORKSPACE\QtMsBuild"
 
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          New-Item -ItemType Directory -Force -Path $destination | Out-Null
-          Expand-Archive -Path $zip -DestinationPath $destination -Force
+          Invoke-WebRequest -Uri $url -OutFile $archive
 
-          $targets = Get-ChildItem -Path $destination -Filter "qt.targets" -Recurse |
+          Expand-Archive -Path $archive -DestinationPath $extractDir -Force
+
+          $targets = Get-ChildItem -Path $extractDir -Filter "qt.targets" -Recurse -File |
             Select-Object -First 1
 
           if ($null -eq $targets) {
-            throw "Could not find qt.targets in Qt MSBuild archive"
+            throw "Qt MSBuild archive does not contain qt.targets."
           }
 
-          $qtMsBuildPath = $targets.DirectoryName
-          "QTMSBUILD_PATH=$qtMsBuildPath" >> $env:GITHUB_ENV
+          $qtMsBuildDir = $targets.Directory.FullName
 
-      # 6. Install vcpkg dependencies
-      - name: Install vcpkg dependencies
+          if (!(Test-Path (Join-Path $qtMsBuildDir "qt.props"))) {
+            throw "qt.props was not found alongside qt.targets."
+          }
+
+          if (!(Test-Path (Join-Path $qtMsBuildDir "qt_defaults.props"))) {
+            throw "qt_defaults.props was not found."
+          }
+
+          Write-Host "Qt MSBuild directory: $qtMsBuildDir"
+
+          "QTMSBUILD_PATH=$qtMsBuildDir" >> $env:GITHUB_ENV
+
+      # 6. Checkout and bootstrap vcpkg
+      - name: Checkout vcpkg
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          path: vcpkg
+
+      - name: Bootstrap vcpkg
         shell: pwsh
         run: |
-          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          $vcpkgRoot = Join-Path $env:GITHUB_WORKSPACE "vcpkg"
+          $bootstrap = Join-Path $vcpkgRoot "bootstrap-vcpkg.bat"
 
-          if ([string]::IsNullOrWhiteSpace($vcpkgRoot)) {
-            $vcpkgRoot = "C:\vcpkg"
+          if (!(Test-Path $bootstrap)) {
+            throw "vcpkg bootstrap script was not found."
           }
 
-          $vcpkg = "$vcpkgRoot\vcpkg.exe"
+          & $bootstrap -disableMetrics
 
-          if (!(Test-Path $vcpkg)) {
-            throw "vcpkg was not found at $vcpkg"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
+
+          if (!(Test-Path $vcpkgExe)) {
+            throw "vcpkg.exe was not generated."
           }
 
           "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
 
-          & $vcpkg integrate install
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # 7. Install the dependencies specified by the project
+      - name: Install vcpkg dependencies
+        shell: pwsh
+        run: |
+          $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
 
           & $vcpkg install cryptopp:x64-windows curl:x64-windows
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # 7. Compile the application
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          & $vcpkg integrate install
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      # 8. Compile the application
       - name: Build Release
         shell: pwsh
         env:
@@ -105,27 +141,60 @@ jobs:
           $steamKey = $env:STEAM_API_KEY
 
           if ([string]::IsNullOrWhiteSpace($steamKey)) {
-            $steamKey = '"NO_API_KEY"'
-          } else {
-            $steamKey = '"' + $steamKey + '"'
+            $steamKey = "NO_API_KEY"
           }
 
-          & msbuild .\MHWISaveEditor.sln `
-            /m `
-            /p:Configuration=Release `
-            /p:Platform=x64 `
-            "/p:QtMsBuild=$env:QTMSBUILD_PATH" `
-            "/p:QtInstallDir=$env:QT_INSTALL_DIR" `
-            "/p:VcpkgRoot=$env:VCPKG_ROOT" `
-            "/p:STEAM_API_KEY=$steamKey" `
-            /verbosity:minimal
+          $steamMacro = '"' + $steamKey + '"'
+
+          $solution = Join-Path $env:GITHUB_WORKSPACE "MHWISaveEditor.sln"
+
+          if (!(Test-Path $solution)) {
+            throw "MHWISaveEditor.sln was not found."
+          }
+
+          $msbuildArgs = @(
+            $solution
+            "/m"
+            "/p:Configuration=Release"
+            "/p:Platform=x64"
+            "/p:QtMsBuild=$env:QTMSBUILD_PATH"
+            "/p:QtInstall=$env:QT_INSTALL_DIR"
+            "/p:VcpkgRoot=$env:VCPKG_ROOT"
+            "/p:STEAM_API_KEY=$steamMacro"
+            "/verbosity:minimal"
+          )
+
+          & msbuild @msbuildArgs
 
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
 
-      # 8. Upload the finished application
-      - name: Upload Windows executable
+      # 9. Verify the deployment output
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          $deployDir = Join-Path $env:GITHUB_WORKSPACE "x64\Deploy"
+
+          if (!(Test-Path $deployDir)) {
+            throw "Deployment directory was not generated: $deployDir"
+          }
+
+          $exe = Get-ChildItem -Path $deployDir -Filter "*.exe" -Recurse -File |
+            Select-Object -First 1
+
+          if ($null -eq $exe) {
+            throw "No executable was found in the deployment directory."
+          }
+
+          Write-Host "Executable found: $($exe.FullName)"
+          Write-Host "Deployment contents:"
+
+          Get-ChildItem -Path $deployDir -Recurse -File |
+            Select-Object FullName, Length
+
+      # 10. Upload the complete application
+      - name: Upload Windows application
         uses: actions/upload-artifact@v4
         with:
           name: MHWISaveEditor-Windows-x64
