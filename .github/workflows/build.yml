@@ -31,17 +31,24 @@ jobs:
           arch: win64_msvc2019_64
 
       # 4. Configure Qt paths
+      
       - name: Configure Qt
         shell: pwsh
         run: |
-          $qtDir = "C:\Qt\6.7.3\msvc2019_64"
+          $qtDir = $env:QT_ROOT_DIR
 
-          if (!(Test-Path "$qtDir\bin\qmake.exe")) {
-            throw "Qt installation was not found at $qtDir"
+          if ([string]::IsNullOrWhiteSpace($qtDir)) {
+            throw "QT_ROOT_DIR was not provided by install-qt-action"
           }
 
+          if (!(Test-Path "$qtDir\bin\qmake.exe")) {
+            throw "Qt installation is incomplete: $qtDir"
+          }
+
+          Write-Host "Qt installation found at: $qtDir"
+
           "QT_INSTALL_DIR=$qtDir" >> $env:GITHUB_ENV
-          "$qtDir\bin" >> $env:GITHUB_PATH
+
 
       # 5. Download Qt MSBuild integration
       - name: Install Qt MSBuild
